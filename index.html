@@ -314,6 +314,7 @@ runBtn.addEventListener('click', async () => {
 
     const records = [];
     const emptyThird = [];
+    const fallbackName1Pages = [];
     for (let i = 0; i < numPages; i++) {
       const page = await pdfjsDoc.getPage(i + 1);
       const viewport = page.getViewport({ scale: 1 });
@@ -326,6 +327,7 @@ runBtn.addEventListener('click', async () => {
       const name3 = cleanName(extractField(items, pageHeight, cfg.p3.min, cfg.p3.max, cfg.p3.xmin, cfg.p3.xmax, ['様', '※']));
 
       if (!name3) emptyThird.push(i + 1);
+      if (!name1) fallbackName1Pages.push(i + 1);
       records.push({ page: i + 1, name1: name1 || '未分類', name2, name3: name3 || ('不明_' + (i + 1)) });
 
       if (i < 3) {
@@ -341,12 +343,18 @@ runBtn.addEventListener('click', async () => {
     if (emptyThird.length) {
       log('注意: ③（お客様名）が読み取れなかったページ: ' + emptyThird.join(', '));
     }
+    if (fallbackName1Pages.length) {
+      log('注意: ①（居宅名）が読み取れなかったページ: ' + fallbackName1Pages.join(', '));
+    }
 
     const seen = {};
     const targets = [];
+    const duplicatePages = [];
+    const emptyName2Pages = [];
     for (const r of records) {
       const folder1 = r.name1;
       const folder2 = r.name2 || '担当者未設定';
+      if (!r.name2) emptyName2Pages.push(r.page);
       const fnameBase = r.name3;
       const key = folder1 + '\u0001' + folder2 + '\u0001' + fnameBase;
       if (seen[key] === undefined) {
@@ -355,24 +363,78 @@ runBtn.addEventListener('click', async () => {
         seen[key] += 1;
       }
       const fname = seen[key] > 1 ? `${fnameBase}_${seen[key]}.pdf` : `${fnameBase}.pdf`;
-      targets.push({ folder1, folder2, fname });
+      if (seen[key] > 1) duplicatePages.push(r.page);
+      targets.push({ folder1, folder2, fname, page: r.page });
     }
 
     setProgress(58, 'ページを分割中...');
     const zip = new JSZip();
+    const pdfIntegrityFailures = [];
     for (let i = 0; i < numPages; i++) {
       const newDoc = await PDFLib.PDFDocument.create();
       const [copiedPage] = await newDoc.copyPages(pdfLibDoc, [i]);
       newDoc.addPage(copiedPage);
       const bytes = await newDoc.save();
+
+      // 整合性チェック：生成直後のバイト列が「1ページだけの正常なPDF」として再度開けるか確認
+      try {
+        const checkDoc = await PDFLib.PDFDocument.load(bytes);
+        if (checkDoc.getPageCount() !== 1) {
+          pdfIntegrityFailures.push({ page: i + 1, reason: `ページ数が${checkDoc.getPageCount()}件` });
+        }
+      } catch (e) {
+        pdfIntegrityFailures.push({ page: i + 1, reason: e.message });
+      }
+
       const t = targets[i];
       zip.folder(t.folder1).folder(t.folder2).file(t.fname, bytes);
 
       if (i % 10 === 0 || i === numPages - 1) {
-        setProgress(58 + (i + 1) / numPages * 37, `分割・保存中... (${i + 1}/${numPages}ページ)`);
+        setProgress(58 + (i + 1) / numPages * 35, `分割・保存中... (${i + 1}/${numPages}ページ)`);
         await new Promise(r => setTimeout(r, 0));
       }
     }
+
+    // --- 検証レポート作成 ---
+    const folder1Count = new Set(targets.map(t => t.folder1)).size;
+    const folder2Count = new Set(targets.map(t => t.folder1 + '\u0001' + t.folder2)).size;
+    const totalFilesGenerated = targets.length;
+    const pageCountOk = totalFilesGenerated === numPages;
+
+    const reportLines = [];
+    reportLines.push('========================================');
+    reportLines.push('検証レポート');
+    reportLines.push('========================================');
+    reportLines.push(`処理日時: ${new Date().toLocaleString('ja-JP')}`);
+    reportLines.push(`元ファイル名: ${fileName}`);
+    reportLines.push('');
+    reportLines.push('[1] ページ抜け確認');
+    reportLines.push(`  元PDFページ数: ${numPages}`);
+    reportLines.push(`  生成ファイル数: ${totalFilesGenerated}`);
+    reportLines.push(`  判定: ${pageCountOk ? 'OK（一致）' : 'NG（不一致・要確認）'}`);
+    reportLines.push('');
+    reportLines.push('[2] PDF破損確認（分割後の各PDFが正常に開けるか）');
+    reportLines.push(`  異常件数: ${pdfIntegrityFailures.length}`);
+    if (pdfIntegrityFailures.length) {
+      pdfIntegrityFailures.forEach(f => reportLines.push(`    - page ${f.page}: ${f.reason}`));
+    } else {
+      reportLines.push('  判定: OK（全件正常）');
+    }
+    reportLines.push('');
+    reportLines.push('[3] リネーム異常確認（①②③が読み取れずフォールバック名になったページ）');
+    reportLines.push(`  ①未読み取り: ${fallbackName1Pages.length}件 ${fallbackName1Pages.length ? '(' + fallbackName1Pages.join(', ') + ')' : ''}`);
+    reportLines.push(`  ②未読み取り（担当者未設定フォルダに格納）: ${emptyName2Pages.length}件 ${emptyName2Pages.length ? '(' + emptyName2Pages.join(', ') + ')' : ''}`);
+    reportLines.push(`  ③未読み取り: ${emptyThird.length}件 ${emptyThird.length ? '(' + emptyThird.join(', ') + ')' : ''}`);
+    reportLines.push('');
+    reportLines.push('[4] 重複確認（同一①②③の組み合わせで連番を付与したページ）');
+    reportLines.push(`  重複件数: ${duplicatePages.length}件 ${duplicatePages.length ? '(' + duplicatePages.join(', ') + ')' : ''}`);
+    reportLines.push('');
+    reportLines.push('[5] 生成サマリー');
+    reportLines.push(`  居宅名フォルダ数: ${folder1Count}`);
+    reportLines.push(`  ケアマネ名フォルダ数: ${folder2Count}`);
+
+    const reportText = reportLines.join('\n');
+    zip.file('検証レポート.txt', reportText);
 
     setProgress(96, 'ZIPを生成中...');
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }, (meta) => {
@@ -381,17 +443,28 @@ runBtn.addEventListener('click', async () => {
 
     setProgress(100, '完了');
     const url = URL.createObjectURL(zipBlob);
-    const folder1Count = new Set(targets.map(t => t.folder1)).size;
-    const folder2Count = new Set(targets.map(t => t.folder1 + '\u0001' + t.folder2)).size;
+
+    const hasIssue = !pageCountOk || pdfIntegrityFailures.length || fallbackName1Pages.length || emptyThird.length;
+    const statusLine = hasIssue
+      ? '<span style="color:#b85c00;font-weight:600;">要確認：一部のページで異常が検出されました（検証レポート.txtを参照）</span>'
+      : '<span style="color:#1a7a1a;font-weight:600;">全件チェックOK</span>';
 
     resultEl.className = 'result';
     resultEl.style.display = 'block';
     resultEl.innerHTML = `<b>処理が完了しました</b>
-総ページ数: ${numPages} 件<br>
-生成フォルダ数（居宅名）: ${folder1Count} 件<br>
-生成フォルダ数（ケアマネ名）: ${folder2Count} 件<br>
-${emptyThird.length ? '③未読み取り: ' + emptyThird.length + '件（ログ参照）<br>' : ''}
+${statusLine}<br><br>
+総ページ数: ${numPages} 件 / 生成ファイル数: ${totalFilesGenerated} 件（${pageCountOk ? '一致' : '不一致'}）<br>
+PDF破損: ${pdfIntegrityFailures.length} 件<br>
+①未読み取り: ${fallbackName1Pages.length} 件 / ②未設定: ${emptyName2Pages.length} 件 / ③未読み取り: ${emptyThird.length} 件<br>
+重複（連番付与）: ${duplicatePages.length} 件<br>
+生成フォルダ数（居宅名）: ${folder1Count} 件 / （ケアマネ名）: ${folder2Count} 件<br>
+<span style="color:#999;font-size:12px;">詳細はZIP内の「検証レポート.txt」をご確認ください。</span><br>
 <a class="download-btn" href="${url}" download="分割済み_${fileName.replace(/\.pdf$/i,'')}.zip">ZIPをダウンロード</a>`;
+
+    if (hasIssue) {
+      log('--- 検証レポート（要約） ---');
+      log(reportText);
+    }
 
   } catch (err) {
     resultEl.className = 'result error';
