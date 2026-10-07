@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>実績報告書 分割・リネームツール</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    background: #f5f5f4;
+    color: #222;
+    margin: 0;
+    padding: 24px;
+  }
+  .container {
+    max-width: 760px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid #e5e5e3;
+    padding: 28px 32px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 6px;
+  }
+  .sub {
+    font-size: 13px;
+    color: #777;
+    margin: 0 0 24px;
+  }
+  .dropzone {
+    border: 2px dashed #ccc;
+    border-radius: 10px;
+    padding: 40px 20px;
+    text-align: center;
+    color: #666;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone.drag {
+    border-color: #4a7fd6;
+    background: #f0f5ff;
+  }
+  .dropzone p { margin: 4px 0; font-size: 14px; }
+  .dropzone .fname { font-weight: 600; color: #222; font-size: 15px; }
+  input[type=file] { display: none; }
+  details {
+    margin-top: 18px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: #555;
+    font-weight: 600;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px 16px;
+    margin-top: 12px;
+  }
+  .field { font-size: 12px; color: #555; }
+  .field label { display: block; margin-bottom: 3px; }
+  .field input {
+    width: 100%;
+    padding: 5px 7px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .field.wide { grid-column: 1 / -1; }
+  button.run {
+    margin-top: 20px;
+    width: 100%;
+    padding: 12px;
+    background: #2f6fed;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.run:disabled {
+    background: #b9c9ee;
+    cursor: not-allowed;
+  }
+  .progress-wrap {
+    margin-top: 18px;
+    display: none;
+  }
+  .progress-bar-bg {
+    background: #eee;
+    border-radius: 6px;
+    height: 10px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    background: #2f6fed;
+    height: 100%;
+    width: 0%;
+    transition: width 0.1s;
+  }
+  .progress-label {
+    font-size: 12px;
+    color: #666;
+    margin-top: 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .log {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #555;
+    max-height: 140px;
+    overflow-y: auto;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: none;
+    white-space: pre-wrap;
+    line-height: 1.6;
+  }
+  .result {
+    margin-top: 18px;
+    display: none;
+    background: #f0f8f0;
+    border: 1px solid #cfe8cf;
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 13px;
+  }
+  .result.error {
+    background: #fdf0f0;
+    border-color: #f0cfcf;
+  }
+  .result b { display: block; margin-bottom: 4px; font-size: 14px; }
+  a.download-btn {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 8px 16px;
+    background: #2f6fed;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>実績報告書 分割・リネームツール</h1>
+  <p class="sub">PDFをアップロードすると、①事業所名／②担当者名／③お客様名を読み取り、1ページごとに分割・リネームし、①（居宅名）フォルダ→②（担当者名）フォルダ→③（利用者名）.pdf という階層構造でZIPにまとめてダウンロードします。処理はすべてブラウザ内で完結し、外部サーバーには送信されません。</p>
+
+  <div class="dropzone" id="dropzone">
+    <p class="fname" id="fname">クリックしてPDFを選択、またはドラッグ&ドロップ</p>
+    <p id="pagecount"></p>
+  </div>
+  <input type="file" id="fileInput" accept="application/pdf">
+
+  <details>
+    <summary>詳細設定（読み取り位置の調整）</summary>
+    <div class="grid">
+      <div class="field wide"><label>① 事業所名：Y座標範囲（pt）</label></div>
+      <div class="field"><label>上限（top min）</label><input type="number" id="p1_top_min" value="53"></div>
+      <div class="field"><label>下限（top max）</label><input type="number" id="p1_top_max" value="64"></div>
+      <div class="field"><label>x max（この右側の文字は無視）</label><input type="number" id="p1_x_max" value="300"></div>
+      <div class="field"></div>
+      <div class="field wide"><label>② 担当者名：Y座標範囲・X上限（pt）</label></div>
+      <div class="field"><label>top min</label><input type="number" id="p2_top_min" value="68"></div>
+      <div class="field"><label>top max</label><input type="number" id="p2_top_max" value="78"></div>
+      <div class="field"><label>x max</label><input type="number" id="p2_x_max" value="200"></div>
+      <div class="field"></div>
+      <div class="field wide"><label>③ お客様名：Y座標範囲・X範囲（pt）</label></div>
+      <div class="field"><label>top min</label><input type="number" id="p3_top_min" value="139"></div>
+      <div class="field"><label>top max</label><input type="number" id="p3_top_max" value="150"></div>
+      <div class="field"><label>x min</label><input type="number" id="p3_x_min" value="45"></div>
+      <div class="field"><label>x max</label><input type="number" id="p3_x_max" value="200"></div>
+    </div>
+  </details>
+
+  <button class="run" id="runBtn" disabled>分割・リネームを実行</button>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+    <div class="progress-label"><span id="progressText">準備中...</span><span id="progressPct">0%</span></div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="result" id="result"></div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+let fileBuffer = null;
+let fileName = "";
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fnameEl = document.getElementById('fname');
+const pagecountEl = document.getElementById('pagecount');
+const runBtn = document.getElementById('runBtn');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progressText');
+const progressPct = document.getElementById('progressPct');
+const logEl = document.getElementById('log');
+const resultEl = document.getElementById('result');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+async function handleFile(file) {
+  if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+    alert('PDFファイルを選択してください');
+    return;
+  }
+  fileName = file.name;
+  fileBuffer = await file.arrayBuffer();
+  fnameEl.textContent = fileName;
+  resultEl.style.display = 'none';
+  logEl.style.display = 'none';
+  logEl.textContent = '';
+  try {
+    const doc = await pdfjsLib.getDocument({ data: fileBuffer.slice(0) }).promise;
+    pagecountEl.textContent = doc.numPages + ' ページ検出';
+    runBtn.disabled = false;
+  } catch (err) {
+    pagecountEl.textContent = 'PDFの読み込みに失敗しました: ' + err.message;
+    runBtn.disabled = true;
+  }
+}
+
+function cleanName(s) {
+  s = (s || '').replace(/[\u3000\s]/g, '');
+  s = s.replace(/[\\\/:*?"<>|]/g, '_');
+  return s;
+}
+
+function log(msg) {
+  logEl.style.display = 'block';
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setProgress(pct, text) {
+  progressFill.style.width = pct + '%';
+  progressPct.textContent = Math.round(pct) + '%';
+  progressText.textContent = text;
+}
+
+function getCfg() {
+  return {
+    p1: { min: +document.getElementById('p1_top_min').value, max: +document.getElementById('p1_top_max').value, xmax: +document.getElementById('p1_x_max').value },
+    p2: { min: +document.getElementById('p2_top_min').value, max: +document.getElementById('p2_top_max').value, xmax: +document.getElementById('p2_x_max').value },
+    p3: { min: +document.getElementById('p3_top_min').value, max: +document.getElementById('p3_top_max').value, xmin: +document.getElementById('p3_x_min').value, xmax: +document.getElementById('p3_x_max').value }
+  };
+}
+
+function extractField(items, pageHeight, topMin, topMax, xMin, xMax, stripChars) {
+  let parts = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    const x0 = it.transform[4];
+    const h = it.height || Math.hypot(it.transform[2], it.transform[3]) || 0;
+    const yTop = pageHeight - (it.transform[5] + h);
+    if (yTop >= topMin && yTop <= topMax && x0 >= (xMin === undefined ? -Infinity : xMin) && x0 <= (xMax === undefined ? Infinity : xMax)) {
+      parts.push({ x0, text: it.str });
+    }
+  }
+  parts.sort((a, b) => a.x0 - b.x0);
+  let joined = parts.map(p => p.text).join('');
+  if (stripChars) {
+    for (const c of stripChars) joined = joined.split(c).join('');
+  }
+  return joined;
+}
+
+runBtn.addEventListener('click', async () => {
+  if (!fileBuffer) return;
+  runBtn.disabled = true;
+  progressWrap.style.display = 'block';
+  resultEl.style.display = 'none';
+  logEl.style.display = 'none';
+  logEl.textContent = '';
+  const cfg = getCfg();
+
+  try {
+    setProgress(0, 'PDFを読み込み中...');
+    const pdfjsDoc = await pdfjsLib.getDocument({ data: fileBuffer.slice(0) }).promise;
+    const pdfLibDoc = await PDFLib.PDFDocument.load(fileBuffer.slice(0));
+    const numPages = pdfjsDoc.numPages;
+
+    const records = [];
+    const emptyThird = [];
+    for (let i = 0; i < numPages; i++) {
+      const page = await pdfjsDoc.getPage(i + 1);
+      const viewport = page.getViewport({ scale: 1 });
+      const pageHeight = viewport.height;
+      const content = await page.getTextContent();
+      const items = content.items;
+
+      const name1 = cleanName(extractField(items, pageHeight, cfg.p1.min, cfg.p1.max, -Infinity, cfg.p1.xmax, []));
+      const name2 = cleanName(extractField(items, pageHeight, cfg.p2.min, cfg.p2.max, -Infinity, cfg.p2.xmax, ['様']));
+      const name3 = cleanName(extractField(items, pageHeight, cfg.p3.min, cfg.p3.max, cfg.p3.xmin, cfg.p3.xmax, ['様', '※']));
+
+      if (!name3) emptyThird.push(i + 1);
+      records.push({ page: i + 1, name1: name1 || '未分類', name2, name3: name3 || ('不明_' + (i + 1)) });
+
+      if (i < 3) {
+        log(`[確認] page ${i + 1}: ①=${name1 || '(空欄)'} ②=${name2 || '(空欄)'} ③=${name3 || '(空欄)'}`);
+      }
+
+      if (i % 5 === 0 || i === numPages - 1) {
+        setProgress((i + 1) / numPages * 55, `文字列を読み取り中... (${i + 1}/${numPages}ページ)`);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    if (emptyThird.length) {
+      log('注意: ③（お客様名）が読み取れなかったページ: ' + emptyThird.join(', '));
+    }
+
+    const seen = {};
+    const targets = [];
+    for (const r of records) {
+      const folder1 = r.name1;
+      const folder2 = r.name2 || '担当者未設定';
+      const fnameBase = r.name3;
+      const key = folder1 + '\u0001' + folder2 + '\u0001' + fnameBase;
+      if (seen[key] === undefined) {
+        seen[key] = 1;
+      } else {
+        seen[key] += 1;
+      }
+      const fname = seen[key] > 1 ? `${fnameBase}_${seen[key]}.pdf` : `${fnameBase}.pdf`;
+      targets.push({ folder1, folder2, fname });
+    }
+
+    setProgress(58, 'ページを分割中...');
+    const zip = new JSZip();
+    for (let i = 0; i < numPages; i++) {
+      const newDoc = await PDFLib.PDFDocument.create();
+      const [copiedPage] = await newDoc.copyPages(pdfLibDoc, [i]);
+      newDoc.addPage(copiedPage);
+      const bytes = await newDoc.save();
+      const t = targets[i];
+      zip.folder(t.folder1).folder(t.folder2).file(t.fname, bytes);
+
+      if (i % 10 === 0 || i === numPages - 1) {
+        setProgress(58 + (i + 1) / numPages * 37, `分割・保存中... (${i + 1}/${numPages}ページ)`);
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    setProgress(96, 'ZIPを生成中...');
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }, (meta) => {
+      setProgress(96 + meta.percent * 0.04, 'ZIPを生成中... ' + Math.round(meta.percent) + '%');
+    });
+
+    setProgress(100, '完了');
+    const url = URL.createObjectURL(zipBlob);
+    const folder1Count = new Set(targets.map(t => t.folder1)).size;
+    const folder2Count = new Set(targets.map(t => t.folder1 + '\u0001' + t.folder2)).size;
+
+    resultEl.className = 'result';
+    resultEl.style.display = 'block';
+    resultEl.innerHTML = `<b>処理が完了しました</b>
+総ページ数: ${numPages} 件<br>
+生成フォルダ数（居宅名）: ${folder1Count} 件<br>
+生成フォルダ数（ケアマネ名）: ${folder2Count} 件<br>
+${emptyThird.length ? '③未読み取り: ' + emptyThird.length + '件（ログ参照）<br>' : ''}
+<a class="download-btn" href="${url}" download="分割済み_${fileName.replace(/\.pdf$/i,'')}.zip">ZIPをダウンロード</a>`;
+
+  } catch (err) {
+    resultEl.className = 'result error';
+    resultEl.style.display = 'block';
+    resultEl.innerHTML = `<b>エラーが発生しました</b>${err.message}`;
+    log('エラー詳細: ' + err.stack);
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
