@@ -160,7 +160,7 @@
 <body>
 <div class="container">
   <h1>実績報告書 分割・リネームツール</h1>
-  <p class="sub">PDFをアップロードすると、①事業所名／②担当名／③利用者名を読み取り、1ページごとに分割・リネームし、①フォルダ→②フォルダ→③.pdf という階層構造でZIPにまとめてダウンロードします。①②③のいずれかが読み取れなかったページは通常階層には入れず、「リネームエラー」フォルダ（事業所名／担当名／利用者名）に分けて格納します。処理はすべてブラウザ内で完結し、外部サーバーには送信されません。</p>
+  <p class="sub">PDFをアップロードすると、①事業所名／②担当名／③利用者名を読み取り、1ページごとに分割・リネームし、①フォルダ→②フォルダ→③.pdf という階層構造でZIPにまとめてダウンロードします。①②③のいずれかが読み取れなかったページは通常階層には入れず、「0_リネームエラー」フォルダ（事業所名／担当名／利用者名）に分けて格納します。処理はすべてブラウザ内で完結し、外部サーバーには送信されません。</p>
 
   <div class="dropzone" id="dropzone">
     <p class="fname" id="fname">クリックしてPDFを選択、またはドラッグ&ドロップ</p>
@@ -400,10 +400,12 @@ runBtn.addEventListener('click', async () => {
       const r = records[i];
       if (r.isError) {
         // リネームエラー専用フォルダへ振り分け（通常階層には入れない）
+        // フォルダ名の先頭に半角数字を付け、解凍後の一覧で常に一番上に表示されるようにする
         const pageFname = `page${String(r.page).padStart(pagePad, '0')}.pdf`;
-        if (!r.name1) zip.folder('リネームエラー').folder('事業所名').file(pageFname, bytes);
-        if (!r.name2) zip.folder('リネームエラー').folder('担当名').file(pageFname, bytes);
-        if (!r.name3) zip.folder('リネームエラー').folder('利用者名').file(pageFname, bytes);
+        const ERROR_FOLDER_NAME = '0_リネームエラー';
+        if (!r.name1) zip.folder(ERROR_FOLDER_NAME).folder('事業所名').file(pageFname, bytes);
+        if (!r.name2) zip.folder(ERROR_FOLDER_NAME).folder('担当名').file(pageFname, bytes);
+        if (!r.name3) zip.folder(ERROR_FOLDER_NAME).folder('利用者名').file(pageFname, bytes);
       } else {
         const t = targets[i];
         zip.folder(t.folder1).folder(t.folder2).file(t.fname, bytes);
@@ -444,7 +446,7 @@ runBtn.addEventListener('click', async () => {
       reportLines.push('  判定: OK（全件正常）');
     }
     reportLines.push('');
-    reportLines.push('[3] リネーム異常確認（①②③が読み取れなかったページ → 「リネームエラー」フォルダに格納）');
+    reportLines.push('[3] リネーム異常確認（①②③が読み取れなかったページ → 「0_リネームエラー」フォルダに格納）');
     reportLines.push(`  ①事業所名 未読み取り: ${fallbackName1Pages.length}件 ${fallbackName1Pages.length ? '(' + fallbackName1Pages.join(', ') + ')' : ''}`);
     reportLines.push(`  ②担当名 未読み取り: ${emptyName2Pages.length}件 ${emptyName2Pages.length ? '(' + emptyName2Pages.join(', ') + ')' : ''}`);
     reportLines.push(`  ③利用者名 未読み取り: ${emptyThird.length}件 ${emptyThird.length ? '(' + emptyThird.join(', ') + ')' : ''}`);
@@ -470,7 +472,7 @@ runBtn.addEventListener('click', async () => {
 
     const hasIssue = !pageCountOk || pdfIntegrityFailures.length || errorPageCount;
     const statusLine = hasIssue
-      ? '<span style="color:#b85c00;font-weight:600;">要確認：リネームエラーフォルダ、または検証レポート.txtをご確認ください</span>'
+      ? '<span style="color:#b85c00;font-weight:600;">要確認：0_リネームエラーフォルダ、または検証レポート.txtをご確認ください</span>'
       : '<span style="color:#1a7a1a;font-weight:600;">全件チェックOK</span>';
 
     resultEl.className = 'result';
@@ -482,7 +484,7 @@ PDF破損: ${pdfIntegrityFailures.length} 件<br>
 内訳　①事業所名: ${fallbackName1Pages.length} 件 / ②担当名: ${emptyName2Pages.length} 件 / ③利用者名: ${emptyThird.length} 件<br>
 重複（連番付与）: ${duplicatePages.length} 件<br>
 生成フォルダ数（居宅名）: ${folder1Count} 件 / （ケアマネ名）: ${folder2Count} 件<br>
-<span style="color:#999;font-size:12px;">エラーページはZIP内「リネームエラー」フォルダへ。詳細はZIP内の「検証レポート.txt」をご確認ください。</span><br>
+<span style="color:#999;font-size:12px;">エラーページはZIP内「0_リネームエラー」フォルダへ。詳細はZIP内の「検証レポート.txt」をご確認ください。</span><br>
 <a class="download-btn" href="${url}" download="分割済み_${fileName.replace(/\.pdf$/i,'')}.zip">ZIPをダウンロード</a>`;
 
     if (hasIssue) {
