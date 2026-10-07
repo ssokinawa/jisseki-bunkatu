@@ -160,7 +160,7 @@
 <body>
 <div class="container">
   <h1>実績報告書 分割・リネームツール</h1>
-  <p class="sub">PDFをアップロードすると、①事業所名／②担当者名／③お客様名を読み取り、1ページごとに分割・リネームし、①（居宅名）フォルダ→②（担当者名）フォルダ→③（利用者名）.pdf という階層構造でZIPにまとめてダウンロードします。処理はすべてブラウザ内で完結し、外部サーバーには送信されません。</p>
+  <p class="sub">PDFをアップロードすると、①事業所名／②担当名／③利用者名を読み取り、1ページごとに分割・リネームし、①フォルダ→②フォルダ→③.pdf という階層構造でZIPにまとめてダウンロードします。①②③のいずれかが読み取れなかったページは通常階層には入れず、「リネームエラー」フォルダ（事業所名／担当名／利用者名）に分けて格納します。処理はすべてブラウザ内で完結し、外部サーバーには送信されません。</p>
 
   <div class="dropzone" id="dropzone">
     <p class="fname" id="fname">クリックしてPDFを選択、またはドラッグ&ドロップ</p>
@@ -315,6 +315,7 @@ runBtn.addEventListener('click', async () => {
     const records = [];
     const emptyThird = [];
     const fallbackName1Pages = [];
+    const emptyName2Pages = [];
     for (let i = 0; i < numPages; i++) {
       const page = await pdfjsDoc.getPage(i + 1);
       const viewport = page.getViewport({ scale: 1 });
@@ -326,9 +327,15 @@ runBtn.addEventListener('click', async () => {
       const name2 = cleanName(extractField(items, pageHeight, cfg.p2.min, cfg.p2.max, -Infinity, cfg.p2.xmax, ['様']));
       const name3 = cleanName(extractField(items, pageHeight, cfg.p3.min, cfg.p3.max, cfg.p3.xmin, cfg.p3.xmax, ['様', '※']));
 
-      if (!name3) emptyThird.push(i + 1);
       if (!name1) fallbackName1Pages.push(i + 1);
-      records.push({ page: i + 1, name1: name1 || '未分類', name2, name3: name3 || ('不明_' + (i + 1)) });
+      if (!name2) emptyName2Pages.push(i + 1);
+      if (!name3) emptyThird.push(i + 1);
+
+      records.push({
+        page: i + 1,
+        name1, name2, name3,
+        isError: !name1 || !name2 || !name3
+      });
 
       if (i < 3) {
         log(`[確認] page ${i + 1}: ①=${name1 || '(空欄)'} ②=${name2 || '(空欄)'} ③=${name3 || '(空欄)'}`);
@@ -341,20 +348,23 @@ runBtn.addEventListener('click', async () => {
     }
 
     if (emptyThird.length) {
-      log('注意: ③（お客様名）が読み取れなかったページ: ' + emptyThird.join(', '));
+      log('注意: ③（利用者名）が読み取れなかったページ: ' + emptyThird.join(', '));
     }
     if (fallbackName1Pages.length) {
-      log('注意: ①（居宅名）が読み取れなかったページ: ' + fallbackName1Pages.join(', '));
+      log('注意: ①（事業所名）が読み取れなかったページ: ' + fallbackName1Pages.join(', '));
+    }
+    if (emptyName2Pages.length) {
+      log('注意: ②（担当名）が読み取れなかったページ: ' + emptyName2Pages.join(', '));
     }
 
+    // 正常ページのみ、通常の①→②→③階層へのファイル名を決定（重複は連番付与）
     const seen = {};
     const targets = [];
     const duplicatePages = [];
-    const emptyName2Pages = [];
     for (const r of records) {
+      if (r.isError) { targets.push(null); continue; }
       const folder1 = r.name1;
-      const folder2 = r.name2 || '担当者未設定';
-      if (!r.name2) emptyName2Pages.push(r.page);
+      const folder2 = r.name2;
       const fnameBase = r.name3;
       const key = folder1 + '\u0001' + folder2 + '\u0001' + fnameBase;
       if (seen[key] === undefined) {
@@ -370,6 +380,7 @@ runBtn.addEventListener('click', async () => {
     setProgress(58, 'ページを分割中...');
     const zip = new JSZip();
     const pdfIntegrityFailures = [];
+    const pagePad = String(numPages).length < 4 ? 4 : String(numPages).length;
     for (let i = 0; i < numPages; i++) {
       const newDoc = await PDFLib.PDFDocument.create();
       const [copiedPage] = await newDoc.copyPages(pdfLibDoc, [i]);
@@ -386,8 +397,17 @@ runBtn.addEventListener('click', async () => {
         pdfIntegrityFailures.push({ page: i + 1, reason: e.message });
       }
 
-      const t = targets[i];
-      zip.folder(t.folder1).folder(t.folder2).file(t.fname, bytes);
+      const r = records[i];
+      if (r.isError) {
+        // リネームエラー専用フォルダへ振り分け（通常階層には入れない）
+        const pageFname = `page${String(r.page).padStart(pagePad, '0')}.pdf`;
+        if (!r.name1) zip.folder('リネームエラー').folder('事業所名').file(pageFname, bytes);
+        if (!r.name2) zip.folder('リネームエラー').folder('担当名').file(pageFname, bytes);
+        if (!r.name3) zip.folder('リネームエラー').folder('利用者名').file(pageFname, bytes);
+      } else {
+        const t = targets[i];
+        zip.folder(t.folder1).folder(t.folder2).file(t.fname, bytes);
+      }
 
       if (i % 10 === 0 || i === numPages - 1) {
         setProgress(58 + (i + 1) / numPages * 35, `分割・保存中... (${i + 1}/${numPages}ページ)`);
@@ -396,10 +416,12 @@ runBtn.addEventListener('click', async () => {
     }
 
     // --- 検証レポート作成 ---
-    const folder1Count = new Set(targets.map(t => t.folder1)).size;
-    const folder2Count = new Set(targets.map(t => t.folder1 + '\u0001' + t.folder2)).size;
-    const totalFilesGenerated = targets.length;
-    const pageCountOk = totalFilesGenerated === numPages;
+    const normalTargets = targets.filter(t => t !== null);
+    const folder1Count = new Set(normalTargets.map(t => t.folder1)).size;
+    const folder2Count = new Set(normalTargets.map(t => t.folder1 + '\u0001' + t.folder2)).size;
+    const errorPageCount = records.filter(r => r.isError).length;
+    const totalFilesGenerated = normalTargets.length; // リネームエラー分は別集計
+    const pageCountOk = (totalFilesGenerated + errorPageCount) === numPages;
 
     const reportLines = [];
     reportLines.push('========================================');
@@ -410,8 +432,9 @@ runBtn.addEventListener('click', async () => {
     reportLines.push('');
     reportLines.push('[1] ページ抜け確認');
     reportLines.push(`  元PDFページ数: ${numPages}`);
-    reportLines.push(`  生成ファイル数: ${totalFilesGenerated}`);
-    reportLines.push(`  判定: ${pageCountOk ? 'OK（一致）' : 'NG（不一致・要確認）'}`);
+    reportLines.push(`  正常分類ファイル数: ${totalFilesGenerated}`);
+    reportLines.push(`  リネームエラー分ページ数: ${errorPageCount}`);
+    reportLines.push(`  判定: ${pageCountOk ? 'OK（合計が一致）' : 'NG（合計が不一致・要確認）'}`);
     reportLines.push('');
     reportLines.push('[2] PDF破損確認（分割後の各PDFが正常に開けるか）');
     reportLines.push(`  異常件数: ${pdfIntegrityFailures.length}`);
@@ -421,12 +444,13 @@ runBtn.addEventListener('click', async () => {
       reportLines.push('  判定: OK（全件正常）');
     }
     reportLines.push('');
-    reportLines.push('[3] リネーム異常確認（①②③が読み取れずフォールバック名になったページ）');
-    reportLines.push(`  ①未読み取り: ${fallbackName1Pages.length}件 ${fallbackName1Pages.length ? '(' + fallbackName1Pages.join(', ') + ')' : ''}`);
-    reportLines.push(`  ②未読み取り（担当者未設定フォルダに格納）: ${emptyName2Pages.length}件 ${emptyName2Pages.length ? '(' + emptyName2Pages.join(', ') + ')' : ''}`);
-    reportLines.push(`  ③未読み取り: ${emptyThird.length}件 ${emptyThird.length ? '(' + emptyThird.join(', ') + ')' : ''}`);
+    reportLines.push('[3] リネーム異常確認（①②③が読み取れなかったページ → 「リネームエラー」フォルダに格納）');
+    reportLines.push(`  ①事業所名 未読み取り: ${fallbackName1Pages.length}件 ${fallbackName1Pages.length ? '(' + fallbackName1Pages.join(', ') + ')' : ''}`);
+    reportLines.push(`  ②担当名 未読み取り: ${emptyName2Pages.length}件 ${emptyName2Pages.length ? '(' + emptyName2Pages.join(', ') + ')' : ''}`);
+    reportLines.push(`  ③利用者名 未読み取り: ${emptyThird.length}件 ${emptyThird.length ? '(' + emptyThird.join(', ') + ')' : ''}`);
+    reportLines.push(`  リネームエラー該当ページ数（重複除く）: ${errorPageCount}件`);
     reportLines.push('');
-    reportLines.push('[4] 重複確認（同一①②③の組み合わせで連番を付与したページ）');
+    reportLines.push('[4] 重複確認（正常分類のうち、同一①②③の組み合わせで連番を付与したページ）');
     reportLines.push(`  重複件数: ${duplicatePages.length}件 ${duplicatePages.length ? '(' + duplicatePages.join(', ') + ')' : ''}`);
     reportLines.push('');
     reportLines.push('[5] 生成サマリー');
@@ -444,21 +468,21 @@ runBtn.addEventListener('click', async () => {
     setProgress(100, '完了');
     const url = URL.createObjectURL(zipBlob);
 
-    const hasIssue = !pageCountOk || pdfIntegrityFailures.length || fallbackName1Pages.length || emptyThird.length;
+    const hasIssue = !pageCountOk || pdfIntegrityFailures.length || errorPageCount;
     const statusLine = hasIssue
-      ? '<span style="color:#b85c00;font-weight:600;">要確認：一部のページで異常が検出されました（検証レポート.txtを参照）</span>'
+      ? '<span style="color:#b85c00;font-weight:600;">要確認：リネームエラーフォルダ、または検証レポート.txtをご確認ください</span>'
       : '<span style="color:#1a7a1a;font-weight:600;">全件チェックOK</span>';
 
     resultEl.className = 'result';
     resultEl.style.display = 'block';
     resultEl.innerHTML = `<b>処理が完了しました</b>
 ${statusLine}<br><br>
-総ページ数: ${numPages} 件 / 生成ファイル数: ${totalFilesGenerated} 件（${pageCountOk ? '一致' : '不一致'}）<br>
+総ページ数: ${numPages} 件 / 正常分類: ${totalFilesGenerated} 件 / リネームエラー: ${errorPageCount} 件（合計 ${pageCountOk ? '一致' : '不一致'}）<br>
 PDF破損: ${pdfIntegrityFailures.length} 件<br>
-①未読み取り: ${fallbackName1Pages.length} 件 / ②未設定: ${emptyName2Pages.length} 件 / ③未読み取り: ${emptyThird.length} 件<br>
+内訳　①事業所名: ${fallbackName1Pages.length} 件 / ②担当名: ${emptyName2Pages.length} 件 / ③利用者名: ${emptyThird.length} 件<br>
 重複（連番付与）: ${duplicatePages.length} 件<br>
 生成フォルダ数（居宅名）: ${folder1Count} 件 / （ケアマネ名）: ${folder2Count} 件<br>
-<span style="color:#999;font-size:12px;">詳細はZIP内の「検証レポート.txt」をご確認ください。</span><br>
+<span style="color:#999;font-size:12px;">エラーページはZIP内「リネームエラー」フォルダへ。詳細はZIP内の「検証レポート.txt」をご確認ください。</span><br>
 <a class="download-btn" href="${url}" download="分割済み_${fileName.replace(/\.pdf$/i,'')}.zip">ZIPをダウンロード</a>`;
 
     if (hasIssue) {
